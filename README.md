@@ -1,4 +1,4 @@
-# Eigen-MoRA: MoRA with Eigenvector based non-param sharding
+# Eigen-MoRA: MoRA with Eigenvector based non-param projection
 
 - Original Paepr: [MoRA: High-Rank Updating for Parameter-Efﬁcient Fine-Tuning](https://arxiv.org/abs/2405.12130)
 
