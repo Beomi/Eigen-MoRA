@@ -54,9 +54,10 @@ class LoraLayer(BaseTunerLayer):
         self.kwargs = kwargs
 
         self.use_mora: dict[str, bool] = {}
-
         self.mora_type: dict[str, int] = {}
 
+        self.use_eigenmora: dict[str, bool] = {}  # Add a flag for Eigenvector MoRA
+        self.eigenmora_eigenvector_matrices = nn.ParameterDict({})  # Add for Eigenvector MoRA
 
         base_layer = self.get_base_layer()
         if isinstance(base_layer, nn.Linear):
@@ -89,7 +90,8 @@ class LoraLayer(BaseTunerLayer):
 
     def update_layer(
         self, adapter_name, r, lora_alpha, lora_dropout, init_lora_weights, use_rslora, use_dora: bool = False,
-        use_mora: bool = False, mora_type: int = 1,
+        use_eigenmora: bool = False,  # Add Eigenvector MoRA parameter
+        **kwargs,  # Use **kwargs to absorb any unused arguments
     ):
         # This code works for linear layers, override for other layer types
         if r <= 0:
@@ -106,8 +108,30 @@ class LoraLayer(BaseTunerLayer):
 
         self.use_mora[adapter_name] = False
         self.mora_type[adapter_name] = mora_type
+        
+        self.use_eigenmora[adapter_name] = use_eigenmora
 
-        if use_mora:
+        if use_eigenmora:
+            # Eigenvector MoRA initialization 
+            self.r[adapter_name] = r
+            self.scaling[adapter_name] = 1.0
+
+            # Calculate eigenvector matrix E from original weight matrix W0
+            W0 = self.get_base_layer().weight
+            eigenvalues, E = torch.linalg.eig(W0 @ W0.T) # Assuming W0 is (out_features x in_features)
+
+            # Select top-k eigenvectors
+            _, top_indices = torch.topk(eigenvalues.real, k=r)
+            E = E[:, top_indices].float() # Convert to float32 
+
+            # Store the eigenvector matrix
+            self.eigenmora_eigenvector_matrices[adapter_name] = nn.Parameter(E, requires_grad=False)
+
+            # Initialize lora_A (you can keep your existing initialization)
+            self.lora_A[adapter_name] = nn.Linear(r, r, bias=False) 
+            nn.init.zeros_(self.lora_A[adapter_name].weight) # Example initialization
+            self.lora_B[adapter_name] = self.lora_A[adapter_name]
+        elif use_mora:
             new_r = int(math.sqrt((self.in_features + self.out_features)*r)+0.5)
             if mora_type == 6:
                 # type 6 require new_r to be even for RoPE
@@ -299,6 +323,21 @@ class LoraLayer(BaseTunerLayer):
 
         return out_x
 
+    def _apply_eigenmora(self, x, scaling, active_adapter):
+        E = self.eigenmora_eigenvector_matrices[active_adapter]
+        lora_A = self.lora_A[active_adapter]
+
+        # 1. Compression: Project onto eigenvector basis 
+        compressed_input = x @ E.T  
+
+        # 2. Apply square matrix (M, represented by lora_A in this implementation)
+        output = lora_A(compressed_input) 
+
+        # 3. Decompression: Project back using eigenvectors
+        reconstructed_output = output @ E 
+
+        return reconstructed_output * scaling
+    
     def _apply_dora(self, x, lora_A, lora_B, scaling, active_adapter):
         """
         For DoRA, calculate the extra output from LoRA with DoRA applied. This should be added on top of the base layer
@@ -655,6 +694,9 @@ class Linear(nn.Module, LoraLayer):
 
                     x = dropout(x)
                     result = result + self._apply_mora(x, lora_A, lora_B, scaling, active_adapter)
+                elif self.use_eigenmora[active_adapter]:
+                    x = dropout(x)
+                    result = result + self._apply_eigenmora(x, scaling, active_adapter)
                 elif not self.use_dora[active_adapter]:
                     # delta = lora_B(lora_A(dropout(x))) * scaling
                     # print(delta.abs().mean().item())
