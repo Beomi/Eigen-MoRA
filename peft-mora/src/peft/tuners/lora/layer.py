@@ -89,7 +89,14 @@ class LoraLayer(BaseTunerLayer):
         self.out_features = out_features
 
     def update_layer(
-        self, adapter_name, r, lora_alpha, lora_dropout, init_lora_weights, use_rslora, use_dora: bool = False,
+        self,
+        adapter_name,
+        r,
+        lora_alpha,
+        lora_dropout,
+        init_lora_weights,
+        use_rslora,
+        use_dora: bool = False,
         use_eigenmora: bool = False,  # Add Eigenvector MoRA parameter
         **kwargs,  # Use **kwargs to absorb any unused arguments
     ):
@@ -108,35 +115,35 @@ class LoraLayer(BaseTunerLayer):
 
         self.use_mora[adapter_name] = False
         self.mora_type[adapter_name] = mora_type
-        
+
         self.use_eigenmora[adapter_name] = use_eigenmora
 
         if use_eigenmora:
-            # Eigenvector MoRA initialization 
+            # Eigenvector MoRA initialization
             self.r[adapter_name] = r
             self.scaling[adapter_name] = 1.0
 
             # Calculate eigenvector matrix E from original weight matrix W0
             W0 = self.get_base_layer().weight
-            eigenvalues, E = torch.linalg.eig(W0 @ W0.T) # Assuming W0 is (out_features x in_features)
+            eigenvalues, E = torch.linalg.eig(W0 @ W0.T)  # Assuming W0 is (out_features x in_features)
 
             # Select top-k eigenvectors
             _, top_indices = torch.topk(eigenvalues.real, k=r)
-            E = E[:, top_indices].float() # Convert to float32 
+            E = E[:, top_indices].float()  # Convert to float32
 
             # Store the eigenvector matrix
             self.eigenmora_eigenvector_matrices[adapter_name] = nn.Parameter(E, requires_grad=False)
 
             # Initialize lora_A (you can keep your existing initialization)
-            self.lora_A[adapter_name] = nn.Linear(r, r, bias=False) 
-            nn.init.zeros_(self.lora_A[adapter_name].weight) # Example initialization
+            self.lora_A[adapter_name] = nn.Linear(r, r, bias=False)
+            nn.init.zeros_(self.lora_A[adapter_name].weight)  # Example initialization
             self.lora_B[adapter_name] = self.lora_A[adapter_name]
         elif use_mora:
-            new_r = int(math.sqrt((self.in_features + self.out_features)*r)+0.5)
+            new_r = int(math.sqrt((self.in_features + self.out_features) * r) + 0.5)
             if mora_type == 6:
                 # type 6 require new_r to be even for RoPE
-                new_r = new_r//2*2
-                            
+                new_r = new_r // 2 * 2
+
             self.lora_A[adapter_name] = nn.Linear(new_r, new_r, bias=False)
             self.r[adapter_name] = new_r
 
@@ -267,34 +274,33 @@ class LoraLayer(BaseTunerLayer):
                 sum_inter += 1
             in_x = x.view(*x.shape[:-1], sum_inter, r).sum(dim=-2)
         elif mora_type == 2 or mora_type == 3:
-            mr, nr = in_f//r+1, in_f//r
-            m, n = in_f - r*nr, r*mr - in_f
-            mm, nn = m*mr, n * nr
+            mr, nr = in_f // r + 1, in_f // r
+            m, n = in_f - r * nr, r * mr - in_f
+            mm, nn = m * mr, n * nr
             if m > 0:
                 x_m, x_n = x[..., :mm], x[..., mm:]
                 x_m = x_m.view(*x.shape[:-1], m, mr).sum(dim=-1)
                 x_n = x_n.view(*x.shape[:-1], n, nr).sum(dim=-1)
-                in_x = torch.cat([x_m, x_n ], dim=-1)
+                in_x = torch.cat([x_m, x_n], dim=-1)
             else:
                 in_x = x.view(*x.shape[:-1], n, nr).sum(dim=-1)
         elif mora_type == 6:
             sum_inter = in_f // r
-            rb1 = in_f//r if in_f % r == 0 else in_f//r + 1
+            rb1 = in_f // r if in_f % r == 0 else in_f // r + 1
             if in_f % r != 0:
                 pad_size = r - in_f % r
                 x = torch.cat([x, x[..., :pad_size]], dim=-1)
                 sum_inter += 1
             in_x = x.view(*x.shape[:-1], sum_inter, r)
-            if not hasattr(self, 'cos') and not hasattr(self, 'sin'):
+            if not hasattr(self, "cos") and not hasattr(self, "sin"):
                 inv_freq = 1.0 / (10000 ** (torch.arange(0, r, 2).float() / r))
                 t = torch.arange(rb1)
                 freqs = torch.outer(t, inv_freq)
                 emb = torch.cat((freqs, freqs), dim=-1)
                 self.cos = emb.cos().unsqueeze(0).to(x.device).to(x.dtype)
                 self.sin = emb.sin().unsqueeze(0).to(x.device).to(x.dtype)
-            rh_in_x = torch.cat((-in_x[..., r//2:], in_x[..., :r//2]), dim=-1)
-            in_x = in_x*self.cos + rh_in_x*self.sin
-
+            rh_in_x = torch.cat((-in_x[..., r // 2 :], in_x[..., : r // 2]), dim=-1)
+            in_x = in_x * self.cos + rh_in_x * self.sin
 
         out_x = lora_A(in_x)
 
@@ -302,15 +308,19 @@ class LoraLayer(BaseTunerLayer):
             repeat_time = out_f // r
             if out_f % r != 0:
                 repeat_time += 1
-            out_x = torch.cat([out_x]*repeat_time, dim=-1)[..., :out_f]
+            out_x = torch.cat([out_x] * repeat_time, dim=-1)[..., :out_f]
         elif mora_type == 2 or mora_type == 4:
-            mr, nr = out_f//r+1, out_f//r
-            m, n = out_f - r*nr, r*mr - out_f
-            mm, nn = m*mr, n * nr
+            mr, nr = out_f // r + 1, out_f // r
+            m, n = out_f - r * nr, r * mr - out_f
+            mm, nn = m * mr, n * nr
             if m > 0:
-                out_x = torch.cat([torch.repeat_interleave(out_x[..., :m], mr, dim=-1),
-                                   torch.repeat_interleave(out_x[..., m:], nr, dim=-1)]
-                                  , dim=-1)
+                out_x = torch.cat(
+                    [
+                        torch.repeat_interleave(out_x[..., :m], mr, dim=-1),
+                        torch.repeat_interleave(out_x[..., m:], nr, dim=-1),
+                    ],
+                    dim=-1,
+                )
             else:
                 out_x = torch.repeat_interleave(out_x, nr, dim=-1)
         elif mora_type == 6:
@@ -319,7 +329,7 @@ class LoraLayer(BaseTunerLayer):
                 repeat_time = out_f // out_x.shape[-1]
                 if out_f % out_x.shape[-1] != 0:
                     repeat_time += 1
-                out_x = torch.cat([out_x]*repeat_time, dim=-1)[..., :out_f]
+                out_x = torch.cat([out_x] * repeat_time, dim=-1)[..., :out_f]
 
         return out_x
 
@@ -327,17 +337,17 @@ class LoraLayer(BaseTunerLayer):
         E = self.eigenmora_eigenvector_matrices[active_adapter]
         lora_A = self.lora_A[active_adapter]
 
-        # 1. Compression: Project onto eigenvector basis 
-        compressed_input = x @ E.T  
+        # 1. Compression: Project onto eigenvector basis
+        compressed_input = x @ E.T
 
         # 2. Apply square matrix (M, represented by lora_A in this implementation)
-        output = lora_A(compressed_input) 
+        output = lora_A(compressed_input)
 
         # 3. Decompression: Project back using eigenvectors
-        reconstructed_output = output @ E 
+        reconstructed_output = output @ E
 
         return reconstructed_output * scaling
-    
+
     def _apply_dora(self, x, lora_A, lora_B, scaling, active_adapter):
         """
         For DoRA, calculate the extra output from LoRA with DoRA applied. This should be added on top of the base layer
@@ -550,7 +560,14 @@ class Linear(nn.Module, LoraLayer):
             weight_A = weight_A.float()
             weight_B = weight_B.float()
 
-        if self.use_mora[adapter]:
+        if self.use_eigenmora[adapter]:
+            lora_A = self.lora_A[adapter].weight
+            E = self.eigenmora_eigenvector_matrices[adapter]
+            scaling = self.scaling[adapter]
+
+            # Calculate delta weight in the original weight space
+            output_tensor = (E @ lora_A @ E.T) * scaling
+        elif self.use_mora[adapter]:
             in_f, out_f = self.in_features, self.out_features
             r = self.r[adapter]
             if in_f % r != 0:
@@ -566,47 +583,51 @@ class Linear(nn.Module, LoraLayer):
                 aw = weight_A
                 for i in range(in_f + pad_size):
                     w[:, i % in_f] += aw[:, i % r]
-                w = torch.cat([w]*repeat_time, dim=0)[:out_f]
+                w = torch.cat([w] * repeat_time, dim=0)[:out_f]
             elif self.mora_type[adapter] == 2:
                 w = weight_A
-                mr, nr = in_f//r+1, in_f//r
-                m, n = in_f - r*nr, r*mr - in_f
+                mr, nr = in_f // r + 1, in_f // r
+                m, n = in_f - r * nr, r * mr - in_f
 
-                mm, nn = m*mr, n * nr
-                w = torch.cat([torch.repeat_interleave(w[:, :m], mr, dim=1),
-                            torch.repeat_interleave(w[:, m:], nr, dim=1)], dim=1)
+                mm, nn = m * mr, n * nr
+                w = torch.cat(
+                    [torch.repeat_interleave(w[:, :m], mr, dim=1), torch.repeat_interleave(w[:, m:], nr, dim=1)], dim=1
+                )
 
-                mr, nr = out_f//r+1, out_f//r
-                m, n = out_f - r*nr, r*mr - out_f
-                mm, nn = m*mr, n * nr
-                w = torch.cat([torch.repeat_interleave(w[:m], mr, dim=0),
-                            torch.repeat_interleave(w[m:], nr, dim=0)], dim=0)
+                mr, nr = out_f // r + 1, out_f // r
+                m, n = out_f - r * nr, r * mr - out_f
+                mm, nn = m * mr, n * nr
+                w = torch.cat(
+                    [torch.repeat_interleave(w[:m], mr, dim=0), torch.repeat_interleave(w[m:], nr, dim=0)], dim=0
+                )
             elif self.mora_type[adapter] == 3:
                 w = weight_A
-                mr, nr = in_f//r+1, in_f//r
-                m, n = in_f - r*nr, r*mr - in_f
-                mm, nn = m*mr, n * nr
-                w = torch.cat([torch.repeat_interleave(w[:, :m], mr, dim=1),
-                            torch.repeat_interleave(w[:, m:], nr, dim=1)], dim=1)
+                mr, nr = in_f // r + 1, in_f // r
+                m, n = in_f - r * nr, r * mr - in_f
+                mm, nn = m * mr, n * nr
+                w = torch.cat(
+                    [torch.repeat_interleave(w[:, :m], mr, dim=1), torch.repeat_interleave(w[:, m:], nr, dim=1)], dim=1
+                )
 
-                w = torch.cat([w]*repeat_time, dim=0)[:out_f]
+                w = torch.cat([w] * repeat_time, dim=0)[:out_f]
             elif self.mora_type[adapter] == 4:
                 w = torch.zeros(r, in_f).to(device, dtype=dtype)
                 aw = weight_A
                 for i in range(in_f + pad_size):
                     w[:, i % in_f] += aw[:, i % r]
 
-                mr, nr = out_f//r+1, out_f//r
-                m, n = out_f - r*nr, r*mr - out_f
-                mm, nn = m*mr, n * nr
-                w = torch.cat([torch.repeat_interleave(w[:m], mr, dim=0),
-                            torch.repeat_interleave(w[m:], nr, dim=0)], dim=0)
+                mr, nr = out_f // r + 1, out_f // r
+                m, n = out_f - r * nr, r * mr - out_f
+                mm, nn = m * mr, n * nr
+                w = torch.cat(
+                    [torch.repeat_interleave(w[:m], mr, dim=0), torch.repeat_interleave(w[m:], nr, dim=0)], dim=0
+                )
             elif self.mora_type[adapter] == 6:
-                w = torch.zeros(in_f+pad_size, in_f).to(device, dtype=dtype)
-                rb1 = in_f//r if in_f % r == 0 else in_f//r + 1
-                rb2 = out_f//r if out_f % r == 0 else out_f//r + 1
+                w = torch.zeros(in_f + pad_size, in_f).to(device, dtype=dtype)
+                rb1 = in_f // r if in_f % r == 0 else in_f // r + 1
+                rb2 = out_f // r if out_f % r == 0 else out_f // r + 1
                 sum_inter, repeat_time = rb1, rb2
-                if not hasattr(self, 'cos') and not hasattr(self, 'sin'):
+                if not hasattr(self, "cos") and not hasattr(self, "sin"):
                     inv_freq = 1.0 / (10000 ** (torch.arange(0, r, 2).float() / r))
                     t = torch.arange(rb1)
                     freqs = torch.outer(t, inv_freq)
@@ -615,15 +636,17 @@ class Linear(nn.Module, LoraLayer):
                     self.sin = emb.sin().unsqueeze(0).to(w.device).to(w.dtype)
                 cos, sin = self.cos, self.sin
                 aw = weight_A
-                aw2 = torch.cat((aw[:, r//2:], -aw[:, :r//2]), dim=-1)
-                for i in range(sum_inter-1):
-                    w[i*r:(i+1)*r, i*r:(i+1)*r] = aw2*sin[:, i] + aw*cos[:, i]
-                i+=1
-                w[i*r:, i*r:]  = (aw2*sin[:, i] + aw*cos[:, i])[:, :r-pad_size] #+ aw2*sin[:, i])[:, :r-pad_size]
+                aw2 = torch.cat((aw[:, r // 2 :], -aw[:, : r // 2]), dim=-1)
+                for i in range(sum_inter - 1):
+                    w[i * r : (i + 1) * r, i * r : (i + 1) * r] = aw2 * sin[:, i] + aw * cos[:, i]
+                i += 1
+                w[i * r :, i * r :] = (aw2 * sin[:, i] + aw * cos[:, i])[
+                    :, : r - pad_size
+                ]  # + aw2*sin[:, i])[:, :r-pad_size]
                 if pad_size > 0:
-                    w[i*r:, :pad_size] = (aw2*sin[:, i] + aw*cos[:, i])[:, r-pad_size:]
+                    w[i * r :, :pad_size] = (aw2 * sin[:, i] + aw * cos[:, i])[:, r - pad_size :]
                 if in_f < out_f:
-                    w = torch.cat([w]*repeat_time, dim=0)[:out_f]
+                    w = torch.cat([w] * repeat_time, dim=0)[:out_f]
                 else:
                     w = w[:out_f]
             else:
@@ -632,8 +655,8 @@ class Linear(nn.Module, LoraLayer):
                 aw = weight_A
                 for i in range(in_f):
                     w[:, i % in_f] += aw[:, i % r]
-                #w = torch.cat([w]*repeat_time, dim=0)[:out_f]
-                w = torch.cat([torch.repeat_interleave(w, out_f//r, dim=0), w], dim=0)[:out_f]
+                # w = torch.cat([w]*repeat_time, dim=0)[:out_f]
+                w = torch.cat([torch.repeat_interleave(w, out_f // r, dim=0), w], dim=0)[:out_f]
             output_tensor = w
         else:
             output_tensor = transpose(weight_B @ weight_A, self.fan_in_fan_out) * self.scaling[adapter]
