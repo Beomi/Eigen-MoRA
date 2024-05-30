@@ -97,6 +97,8 @@ class LoraLayer(BaseTunerLayer):
         init_lora_weights,
         use_rslora,
         use_dora: bool = False,
+        use_mora: bool = False,
+        mora_type: int = 6,
         use_eigenmora: bool = False,  # Add Eigenvector MoRA parameter
         **kwargs,  # Use **kwargs to absorb any unused arguments
     ):
