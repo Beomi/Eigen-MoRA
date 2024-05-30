@@ -2,6 +2,9 @@
 
 - Original Paepr: [MoRA: High-Rank Updating for Parameter-Efﬁcient Fine-Tuning](https://arxiv.org/abs/2405.12130)
 
+## Idea
+
+- Can Non-parametric function could retrain important informations?
 
 ---
 
