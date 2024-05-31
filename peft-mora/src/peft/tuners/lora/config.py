@@ -252,6 +252,14 @@ class LoraConfig(PeftConfig):
             )
         },
     )
+    use_eigenmora: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Enable Eigen-MoRA"
+            )
+        },
+    )
 
     mora_type: int = field(
         default=1,

@@ -157,6 +157,7 @@ class LoraModel(BaseTuner):
             "use_rslora": lora_config.use_rslora,
             "use_dora": lora_config.use_dora,
             "use_mora": lora_config.use_mora,
+            "use_eigenmora": lora_config.use_eigenmora,
             "mora_type": lora_config.mora_type,
             "loaded_in_8bit": getattr(self.model, "is_loaded_in_8bit", False),
             "loaded_in_4bit": getattr(self.model, "is_loaded_in_4bit", False),
@@ -164,6 +165,7 @@ class LoraModel(BaseTuner):
 
 
         use_mora = lora_config.use_mora
+        use_eigenmora = lora_config.use_eigenmora
 
         quant_methods = ["gptq", "aqlm", "awq"]
         for quant_method in quant_methods:
@@ -185,6 +187,7 @@ class LoraModel(BaseTuner):
                 use_dora=lora_config.use_dora,
                 use_mora=use_mora,
                 mora_type=lora_config.mora_type,
+                use_eigenmora=use_eigenmora,
             )
         else:
             new_module = self._create_new_module(lora_config, adapter_name, target, **kwargs)

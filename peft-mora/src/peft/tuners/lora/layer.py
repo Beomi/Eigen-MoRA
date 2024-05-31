@@ -32,7 +32,7 @@ class LoraLayer(BaseTunerLayer):
     # All names of layers that may contain (trainable) adapter weights
     adapter_layer_names = ("lora_A", "lora_B", "lora_embedding_A", "lora_embedding_B")
     # All names of other parameters that may contain adapter-related parameters
-    other_param_names = ("r", "lora_alpha", "scaling", "lora_dropout")
+    other_param_names = ("r", "lora_alpha", "scaling", "lora_dropout", "eigenmora_eigenvector_matrices")
 
     def __init__(self, base_layer: nn.Module, **kwargs) -> None:
         self.base_layer = base_layer
@@ -119,7 +119,7 @@ class LoraLayer(BaseTunerLayer):
         self.mora_type[adapter_name] = mora_type
 
         self.use_eigenmora[adapter_name] = use_eigenmora
-
+        
         if use_eigenmora:
             # Eigenvector MoRA initialization
             self.r[adapter_name] = r
@@ -127,11 +127,18 @@ class LoraLayer(BaseTunerLayer):
 
             # Calculate eigenvector matrix E from original weight matrix W0
             W0 = self.get_base_layer().weight
-            eigenvalues, E = torch.linalg.eig(W0 @ W0.T)  # Assuming W0 is (out_features x in_features)
+            # print("Calculate Eigenvalue")
+            # eigenvalues, E = torch.linalg.eigh(W0.to(torch.float32))  # Assuming W0 is (out_features x in_features)
 
             # Select top-k eigenvectors
-            _, top_indices = torch.topk(eigenvalues.real, k=r)
-            E = E[:, top_indices].float()  # Convert to float32
+            # _, top_indices = torch.topk(eigenvalues.real, k=r)
+            # E = E[:, top_indices].float()  # Convert to float32
+            
+            # svd / eig / eigh does NOT support bf16.
+            U, S, Vh = torch.linalg.svd(W0.to(torch.float32))  # Unpack all three values
+
+            # Select top-k eigenvectors from U
+            E = U[:, :r] #.float()  # Select top-k eigenvectors and cast to float
 
             # Store the eigenvector matrix
             self.eigenmora_eigenvector_matrices[adapter_name] = nn.Parameter(E, requires_grad=False)
@@ -336,17 +343,31 @@ class LoraLayer(BaseTunerLayer):
         return out_x
 
     def _apply_eigenmora(self, x, scaling, active_adapter):
+        # print("active_adapter:", active_adapter)
+        def expand_tensor(input_tensor: torch.Tensor, n_rep: int):
+            return torch.repeat_interleave(input_tensor, n_rep, dim=0)
+        
         E = self.eigenmora_eigenvector_matrices[active_adapter]
         lora_A = self.lora_A[active_adapter]
 
+        # print("E.size()", E.size())
+        # print("x.size()", x.size())
         # 1. Compression: Project onto eigenvector basis
-        compressed_input = x @ E.T
+        repeat_size = int(x.size()[-1]/E.size()[0])
+        # print("repeat_size:", repeat_size)
+        # GQA
+        expanded_E = expand_tensor(E, repeat_size)
+        
+        # print("expanded E.size()", E.size())
+        
+        compressed_input = x @ expanded_E
+        # print(compressed_input.size())
 
         # 2. Apply square matrix (M, represented by lora_A in this implementation)
         output = lora_A(compressed_input)
 
         # 3. Decompression: Project back using eigenvectors
-        reconstructed_output = output @ E
+        reconstructed_output = output @ E.T
 
         return reconstructed_output * scaling
 
@@ -436,6 +457,7 @@ class Linear(nn.Module, LoraLayer):
         use_dora: bool = False,
         use_mora: bool = False,
         mora_type: int = 1,
+        use_eigenmora: bool = False,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -453,6 +475,7 @@ class Linear(nn.Module, LoraLayer):
             use_dora=use_dora,
             use_mora=use_mora,
             mora_type=mora_type,
+            use_eigenmora=use_eigenmora,
         )
         self.is_target_conv_1d_layer = is_target_conv_1d_layer
 
@@ -722,14 +745,14 @@ class Linear(nn.Module, LoraLayer):
                 elif self.use_eigenmora[active_adapter]:
                     x = dropout(x)
                     result = result + self._apply_eigenmora(x, scaling, active_adapter)
-                elif not self.use_dora[active_adapter]:
-                    # delta = lora_B(lora_A(dropout(x))) * scaling
-                    # print(delta.abs().mean().item())
-                    # with open('lora.txt', 'w') as f:
-                    #     print(delta.abs().mean().item(), file=f)
-                    # result = result + delta
+#                 elif not self.use_dora[active_adapter]:
+#                     # delta = lora_B(lora_A(dropout(x))) * scaling
+#                     # print(delta.abs().mean().item())
+#                     # with open('lora.txt', 'w') as f:
+#                     #     print(delta.abs().mean().item(), file=f)
+#                     # result = result + delta
 
-                    result = result + lora_B(lora_A(dropout(x))) * scaling
+#                     result = result + lora_B(lora_A(dropout(x))) * scaling
                 else:
                     x = dropout(x)
                     result = result + self._apply_dora(x, lora_A, lora_B, scaling, active_adapter)
